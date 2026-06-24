@@ -126,10 +126,11 @@ describe("crabline transport", () => {
         try {
           expect(transport.requiredPluginIds).toEqual(["whatsapp"]);
           expect(transport.createRuntimeEnvPatch?.()).toMatchObject({
-            WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
-            WHATSAPP_API_ROOT: expect.stringMatching(
+            CRABLINE_WHATSAPP_ACCESS_TOKEN: "crabline-whatsapp-access-token",
+            CRABLINE_WHATSAPP_API_ROOT: expect.stringMatching(
               /^http:\/\/127\.0\.0\.1:\d+\/crabline\/whatsapp$/u,
             ),
+            CRABLINE_WHATSAPP_SELF_JID: "15550000000@s.whatsapp.net",
           });
         } finally {
           await transport.cleanup?.();

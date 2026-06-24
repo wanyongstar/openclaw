@@ -23,6 +23,10 @@ import {
   unregisterWhatsAppConnectionController,
 } from "./connection-controller-registry.js";
 import {
+  createCrablineWhatsAppConnectionController,
+  resolveCrablineWhatsAppConfig,
+} from "./crabline-controller.js";
+import {
   resolveWhatsAppGroupIntroHint,
   resolveWhatsAppMentionStripRegexes,
 } from "./group-intro.js";
@@ -31,10 +35,6 @@ import {
   resolveWhatsAppGroupToolPolicy,
 } from "./group-policy.js";
 import { checkWhatsAppHeartbeatReady } from "./heartbeat.js";
-import {
-  createWhatsAppHttpApiConnectionController,
-  resolveWhatsAppHttpApiConfig,
-} from "./http-api-listener.js";
 import {
   isWhatsAppGroupJid,
   isWhatsAppNewsletterJid,
@@ -98,7 +98,7 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
         setupWizard: whatsappSetupWizardProxy,
         setup: whatsappSetupAdapter,
         isConfigured: async (account) => {
-          if (resolveWhatsAppHttpApiConfig()) {
+          if (resolveCrablineWhatsAppConfig()) {
             return true;
           }
           const channelRuntime = await loadWhatsAppChannelRuntime();
@@ -335,9 +335,9 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
       gateway: {
         startAccount: async (ctx) => {
           const account = ctx.account;
-          const httpApiConfig = resolveWhatsAppHttpApiConfig();
-          if (httpApiConfig) {
-            const controller = createWhatsAppHttpApiConnectionController(httpApiConfig);
+          const crablineConfig = resolveCrablineWhatsAppConfig();
+          if (crablineConfig) {
+            const controller = await createCrablineWhatsAppConnectionController(crablineConfig);
             registerWhatsAppConnectionController(account.accountId, controller);
             const now = Date.now();
             ctx.setStatus({
@@ -351,7 +351,7 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
               running: true,
             });
             ctx.log?.info(
-              `[${account.accountId}] starting HTTP API listener (${httpApiConfig.apiRoot})`,
+              `[${account.accountId}] starting Crabline WhatsApp fake provider (${crablineConfig.apiRoot})`,
             );
             try {
               await new Promise<void>((resolve) => {

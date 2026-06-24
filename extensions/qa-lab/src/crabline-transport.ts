@@ -42,13 +42,14 @@ export type QaCrablineChannelDriverSelection = {
 
 type QaCrablineManifest = {
   accessToken?: string;
-  adminToken: string;
+  adminToken?: string;
   endpoints: {
     adminInboundUrl: string;
     apiRoot: string;
   };
   provider: string;
   recorderPath: string;
+  selfJid?: string;
 };
 
 type QaStartedOpenClawCrablineAdapter = Omit<
@@ -157,7 +158,9 @@ async function postCrablineInbound(params: {
     init: {
       body: JSON.stringify(params.providerBody),
       headers: {
-        authorization: `Bearer ${params.adapter.manifest.adminToken}`,
+        ...(params.adapter.manifest.adminToken
+          ? { authorization: `Bearer ${params.adapter.manifest.adminToken}` }
+          : {}),
         "content-type": "application/json",
       },
       method: "POST",
@@ -205,8 +208,9 @@ function createCrablineRuntimeEnvPatch(
       throw new Error("Crabline WhatsApp manifest is missing an access token.");
     }
     return {
-      WHATSAPP_ACCESS_TOKEN: adapter.manifest.accessToken,
-      WHATSAPP_API_ROOT: adapter.manifest.endpoints.apiRoot,
+      CRABLINE_WHATSAPP_ACCESS_TOKEN: adapter.manifest.accessToken,
+      CRABLINE_WHATSAPP_API_ROOT: adapter.manifest.endpoints.apiRoot,
+      ...(adapter.manifest.selfJid ? { CRABLINE_WHATSAPP_SELF_JID: adapter.manifest.selfJid } : {}),
     };
   }
   return adapter.createChannelDriverSmokeEnv({});
