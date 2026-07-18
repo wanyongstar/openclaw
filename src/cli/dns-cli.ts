@@ -22,6 +22,7 @@ function run(cmd: string, args: string[], opts?: RunOpts): string {
     encoding: "utf-8",
     stdio: opts?.inherit ? "inherit" : "pipe",
     timeout: 60_000,
+    timeout: 60_000,
   });
   if (res.error) {
     throw res.error;
