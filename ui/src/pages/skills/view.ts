@@ -1,3 +1,4 @@
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 // Control UI page renders skills screen content. The list surfaces follow the
 // settings design language (ui/docs/design-system/settings-design.md): section
 // headings outside one group surface, rows with a control cluster, dot+text
@@ -6,12 +7,12 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import type { AgentsListResult, SkillStatusEntry, SkillStatusReport } from "../../api/types.ts";
 import "../../components/agent-select-registration.ts";
+import type { AgentsListResult, SkillStatusEntry, SkillStatusReport } from "../../api/types.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
 import { icons } from "../../components/icons.ts";
-import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
 import "../../components/modal-dialog.ts";
+import { toSanitizedMarkdownHtml } from "../../components/markdown.ts";
 import {
   renderSettingsEmpty,
   renderSettingsPage,
@@ -25,9 +26,9 @@ import { t } from "../../i18n/index.ts";
 import { listSelectableAgents, normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { clampText } from "../../lib/format.ts";
 import { resolveSafeExternalUrl } from "../../lib/open-external-url.ts";
-import { groupSkills, type SkillGroup } from "../../lib/skills-grouping.ts";
 import "../../styles/plugins.css";
 import "../../styles/sidebar-markdown.css";
+import { groupSkills, type SkillGroup } from "../../lib/skills-grouping.ts";
 import {
   computeSkillMissing,
   computeSkillReasons,
@@ -42,7 +43,6 @@ import {
   type SkillOperation,
   type SkillMessageMap,
 } from "../../lib/skills/index.ts";
-import { normalizeLowercaseStringOrEmpty } from "../../lib/string-coerce.ts";
 
 function safeExternalHref(raw?: string): string | null {
   if (!raw) {
@@ -335,7 +335,7 @@ function renderSkillsToolbar(
         })),
         onChange: (value) => props.onStatusFilterChange(value),
       })}
-      ${agents.length > 0
+      ${agents.length > 1
         ? html`
             <div class="plugins-field skills-toolbar__agent">
               <span>${t("usage.filters.agent")}</span>
@@ -355,7 +355,7 @@ function renderSkillsToolbar(
                 })}
                 .value=${selectedAgentId}
                 .accessibleLabel=${t("usage.filters.agent")}
-                .disabled=${skillControlsLocked(props) || !props.connected || agents.length < 2}
+                .disabled=${skillControlsLocked(props) || !props.connected}
                 .onSelect=${props.onAgentChange}
               ></openclaw-agent-select>
             </div>

@@ -3,13 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
-import type { SubagentRunRecord } from "../src/agents/subagent-registry.types.js";
+import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+import type { SubagentRunRecord } from "../src/agents/subagents/registry/subagent-registry.types.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../src/state/openclaw-state-db.generated.js";
 import {
   WORKER_RESULT_SENTINEL,
   type WorkerResult,
   type WorkerScenario,
 } from "./bench-agent-concurrency.js";
+import { classifyBoundedUnsignedDecimal } from "./lib/arg-utils.mts";
 
 type WorkerOptions = {
   scenario: WorkerScenario;
@@ -32,14 +34,14 @@ const SCENARIOS = new Set<WorkerScenario>([
 ]);
 
 function parseInteger(raw: string | undefined, flag: string, min: number, max: number): number {
-  if (!raw || !/^\d+$/u.test(raw)) {
+  const result = classifyBoundedUnsignedDecimal(raw, min, max);
+  if (result.kind === "syntax") {
     throw new Error(`${flag} must be an integer`);
   }
-  const value = Number(raw);
-  if (value < min || value > max) {
+  if (result.kind !== "value") {
     throw new Error(`${flag} must be between ${min} and ${max}`);
   }
-  return value;
+  return result.value;
 }
 
 function parseOptions(argv: string[]): WorkerOptions {
@@ -71,10 +73,6 @@ function processMaxRssBytes(): number {
   return Math.max(0, Math.round(process.resourceUsage().maxRSS * 1024));
 }
 
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
-}
-
 async function waitForCondition(check: () => boolean): Promise<boolean> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -88,9 +86,21 @@ async function waitForCondition(check: () => boolean): Promise<boolean> {
   return check();
 }
 
+async function drainSpawnSampleRootWork(
+  waitForRootWork?: (timeoutMs: number) => Promise<{ drained: boolean; active: number }>,
+): Promise<void> {
+  const wait =
+    waitForRootWork ??
+    (await import("../src/process/gateway-work-admission.js")).waitForActiveGatewayRootWork;
+  const result = await wait(30_000);
+  if (!result.drained || result.active !== 0) {
+    throw new Error(`spawn sample left ${result.active} active gateway root work items`);
+  }
+}
+
 async function resetRuntime(persist: boolean): Promise<void> {
   const [subagents, tasks, stateDb, agentDb] = await Promise.all([
-    import("../src/agents/subagent-registry.test-helpers.js"),
+    import("../src/agents/subagents/registry/subagent-registry.test-helpers.js"),
     import("../src/tasks/task-runtime.test-helpers.js"),
     import("../src/state/openclaw-state-db.js"),
     import("../src/state/openclaw-agent-db.js"),
@@ -172,8 +182,8 @@ async function configureSpawnRuntime(
   callGateway: typeof import("../src/gateway/call.js").callGateway,
 ): Promise<void> {
   const [subagents, registry, taskStore, flowStore] = await Promise.all([
-    import("../src/agents/subagent-registry.test-helpers.js"),
-    import("../src/agents/subagent-registry-memory.js"),
+    import("../src/agents/subagents/registry/subagent-registry.test-helpers.js"),
+    import("../src/agents/subagents/registry/subagent-registry-memory.js"),
     import("../src/tasks/task-registry.store.js"),
     import("../src/tasks/task-flow-registry.store.test-support.js"),
   ]);
@@ -194,7 +204,7 @@ async function configureSpawnRuntime(
       return undefined;
     },
     cleanupBrowserSessionsForLifecycleEnd: async () => {},
-    runSubagentAnnounceFlow: async () => false,
+    runSubagentAnnounceFlow: async () => "retryable" as const,
     maybeWakeRequesterAfterAllChildrenSettled: async () => false,
     ensureContextEnginesInitialized: () => {},
     loadAgentRuntimePluginRegistryHandle: () => undefined,
@@ -303,7 +313,7 @@ async function runSpawnSample(
 ): Promise<Sample> {
   const [pipeline, registry] = await Promise.all([
     import("../src/agents/spawn-pipeline.js"),
-    import("../src/agents/subagent-registry-memory.js"),
+    import("../src/agents/subagents/registry/subagent-registry-memory.js"),
   ]);
   await resetRuntime(mode === "durable");
   const barrier = createTerminalWaitBarrier();
@@ -431,6 +441,9 @@ async function runSpawnSample(
         `spawn ${mode} settlement invariant failed: ${JSON.stringify({ fanout, settledRuns, succeededTasks, outstandingWaits: barrier.outstanding })}`,
       );
     }
+    // Terminal rows can settle before detached cleanup and requester-wake roots.
+    // Drain before reset so leaked work stays visible and cannot reach the next sample.
+    await drainSpawnSampleRootWork();
     result = {
       durationMs,
       invariant: {
@@ -448,6 +461,7 @@ async function runSpawnSample(
         postTeardownTaskRows: -1,
         postTeardownDurableSubagentRows: -1,
         postTeardownDurableTaskRows: -1,
+        postTeardownActiveRootWork: 0,
       },
     };
   } catch (error) {
@@ -465,7 +479,7 @@ async function runSpawnSample(
     }
   }
   if (failure) {
-    throw toError(failure);
+    throw toErrorObject(failure, "Agent concurrency benchmark failed");
   }
   const postTeardownTasks = await listBenchmarkTaskMemory();
   const postTeardownRegistryRows = registry.subagentRuns.size;
@@ -575,10 +589,15 @@ function sweepRow(child: number, generation: number, now: number): SubagentRunRe
 }
 
 async function runSweepSample(childCount: number): Promise<Sample> {
-  const { createSubagentRegistrySweeper } =
-    await import("../src/agents/subagent-registry-sweeper.js");
+  const [
+    { getSubagentRunsForChildSession, subagentRuns: runs },
+    { createSubagentRegistrySweeper },
+  ] = await Promise.all([
+    import("../src/agents/subagents/registry/subagent-registry-memory.js"),
+    import("../src/agents/subagents/registry/subagent-registry-sweeper.js"),
+  ]);
   const now = Date.now();
-  const runs = new Map<string, SubagentRunRecord>();
+  runs.clear();
   for (let child = 0; child < childCount; child += 1) {
     for (const generation of [3, 2, 1]) {
       const entry = sweepRow(child, generation, now);
@@ -618,6 +637,7 @@ async function runSweepSample(childCount: number): Promise<Sample> {
     resumeRequesterSettleWake: () => {},
     startSubagentAnnounceCleanupFlow: () => true,
     completeCleanupBookkeeping: () => {},
+    discardTerminalDelivery: () => {},
     shouldEmitEndedHookForRun: () => false,
     emitSubagentEndedHookForRun: async () => {},
     callGateway: (async <T>() => {
@@ -632,8 +652,7 @@ async function runSweepSample(childCount: number): Promise<Sample> {
       sessionEffects += 1;
     },
     retireSupersededRun: async () => {},
-    getRunsForChildSession: (childSessionKey) =>
-      [...runs.values()].filter((entry) => entry.childSessionKey === childSessionKey),
+    getRunsForChildSession: getSubagentRunsForChildSession,
     getRunsForCollectorGroup: () => [],
     warn: () => {},
   });
@@ -668,12 +687,13 @@ async function runSweepSample(childCount: number): Promise<Sample> {
     };
   } finally {
     sweeper.reset();
+    runs.clear();
   }
 }
 
 async function runDedupeSample(childCount: number): Promise<Sample> {
   const { dedupeLatestChildCompletionRows } =
-    await import("../src/agents/subagent-announce-output.js");
+    await import("../src/agents/subagents/announce/subagent-announce-output.js");
   const rowsForOrder = (generations: number[]) =>
     Array.from({ length: childCount }, (_, child) =>
       generations.map((generation) => ({
@@ -788,13 +808,15 @@ async function main(): Promise<void> {
     }
   }
   if (failure) {
-    throw toError(failure);
+    throw toErrorObject(failure, "Agent concurrency benchmark failed");
   }
   if (!result) {
     throw new Error("benchmark worker completed without a result");
   }
   process.stdout.write(`${WORKER_RESULT_SENTINEL}${JSON.stringify(result)}\n`);
 }
+
+export const testing = { drainSpawnSampleRootWork };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {

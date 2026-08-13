@@ -1,5 +1,6 @@
 // Matrix plugin module implements shared behavior.
 import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-id";
+import { toStringifiedError as toRetirementError } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { CoreConfig } from "../../types.js";
@@ -75,20 +76,18 @@ type SharedMatrixClientParams = {
 const sharedClientStates = new Map<string, SharedMatrixClientState>();
 const sharedClientPromises = new Map<string, Promise<SharedMatrixClientState>>();
 
-function serializeDispatcherPolicyKey(auth: MatrixAuth): string {
-  return JSON.stringify(auth.dispatcherPolicy ?? null);
-}
-
 function buildSharedClientKey(auth: MatrixAuth): string {
-  return [
+  // Serialize the tuple as a whole: Matrix URLs and credentials may contain `|`,
+  // so delimiter-joined keys can alias distinct clients and couple crypto/leases.
+  return JSON.stringify([
     auth.homeserver,
     auth.userId,
     auth.accessToken,
     auth.encryption ? "e2ee" : "plain",
     auth.allowPrivateNetwork ? "private-net" : "strict-net",
-    serializeDispatcherPolicyKey(auth),
+    auth.dispatcherPolicy ?? null,
     auth.accountId,
-  ].join("|");
+  ]);
 }
 
 async function createSharedMatrixClient(params: {
@@ -274,10 +273,6 @@ async function retireMonitorLeases(
   if (failure?.status === "rejected") {
     throw failure.reason;
   }
-}
-
-function toRetirementError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }
 
 function mergeReleaseMode(

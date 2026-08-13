@@ -68,6 +68,7 @@ export async function runQaRuntimeParitySuite(params: {
   progressEnabled: boolean;
   scenarioIds?: readonly string[];
   runtimePair: [RuntimeId, RuntimeId];
+  mutateConfig?: QaSuiteRunParams["mutateConfig"];
   writeEvidenceFile?: boolean;
 }) {
   const ownsLab = !params.lab;
@@ -110,6 +111,7 @@ export async function runQaRuntimeParitySuite(params: {
   let parentTransportCleaned = false;
   let result: QaSuiteResult | undefined;
   let evidenceWritten = false;
+  const startedScenarioIds = new Set<string>();
   try {
     if (params.channelDriver === "live") {
       // The parent only contributes aggregate metadata; release its exclusive
@@ -179,10 +181,14 @@ export async function runQaRuntimeParitySuite(params: {
               enabledPluginIds: params.enabledPluginIds,
               startLab,
               controlUiEnabled: params.controlUiEnabled ?? scenarioRequiresControlUi(scenario),
+              mutateConfig: params.mutateConfig,
               forcedRuntime: runtime,
               captureRuntimeParityCell: true,
               writeEvidenceFile: params.writeEvidenceFile,
             });
+            for (const startedScenarioId of cellResult.startedScenarioIds) {
+              startedScenarioIds.add(startedScenarioId);
+            }
             const scenarioResult =
               cellResult.scenarios[0] ??
               ({
@@ -265,7 +271,8 @@ export async function runQaRuntimeParitySuite(params: {
         alternateModel: params.alternateModel,
         fastMode: params.fastMode,
         concurrency: params.concurrency,
-        channelDriver: params.channelDriver,
+        channel: params.channelId ?? params.channelDriverSelection?.channel ?? transport.id,
+        channelDriver: transportFactoryResult.driver,
         channelDriverSelection: params.channelDriverSelection,
         scenarioIds:
           params.scenarioIds && params.scenarioIds.length > 0
@@ -296,6 +303,9 @@ export async function runQaRuntimeParitySuite(params: {
       summaryPath,
       report,
       scenarios,
+      startedScenarioIds: params.selectedScenarios
+        .map((scenario) => scenario.id)
+        .filter((scenarioId) => startedScenarioIds.has(scenarioId)),
       watchUrl: lab.baseUrl,
     } satisfies QaSuiteResult;
   } catch (error) {

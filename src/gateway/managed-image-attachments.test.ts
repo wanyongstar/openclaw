@@ -16,6 +16,7 @@ import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/sess
 import { resolveExistingAgentSessionStoreTargetsReadOnlyResult } from "../config/sessions/targets-read-availability.js";
 import { createPinnedLookup } from "../infra/net/ssrf.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { readImageProbeFromHeader } from "../media/image-ops.js";
 import { setMediaStoreNetworkDepsForTest } from "../media/store.test-support.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -24,6 +25,7 @@ import {
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
+  attachManagedImageRecordToMessage,
   insertManagedImageRecord,
   MANAGED_OUTGOING_ORIGINALS_SUBDIR,
   readManagedImageRecord,
@@ -65,7 +67,7 @@ vi.mock("./http-utils.js", () => ({
 
 vi.mock("./session-utils.js", () => ({
   loadSessionEntry: loadSessionEntryMock,
-  loadSessionEntryReadOnly: loadSessionEntryMock,
+  loadGatewaySessionEntryReadOnly: loadSessionEntryMock,
   resolveSessionHistoryTranscriptPathAsync: resolveSessionHistoryTranscriptPathMock,
 }));
 
@@ -231,6 +233,8 @@ async function createFixture(
     filename?: string;
     contentType?: string;
     body?: Buffer;
+    messageId?: string | null;
+    createdAt?: string;
   },
 ) {
   const attachmentId = options?.attachmentId ?? "11111111-1111-4111-8111-111111111111";
@@ -245,8 +249,8 @@ async function createFixture(
       attachmentId,
       sessionKey,
       ...(options?.agentId ? { agentId: options.agentId } : {}),
-      messageId: "msg-1",
-      createdAt: new Date().toISOString(),
+      messageId: options?.messageId === undefined ? "msg-1" : options.messageId,
+      createdAt: options?.createdAt ?? new Date().toISOString(),
       alt: "Cat",
       original: {
         mediaRoot: path.join(stateDir, "media"),
@@ -906,6 +910,61 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
     });
     expect(wrong.result.statusCode).toBe(401);
     expect(authorizeGatewayHttpRequestOrReplyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves a bounded thumbnail through the full-image artifact ticket", async () => {
+    const source = createSolidPngBuffer(640, 320, { r: 24, g: 64, b: 128 });
+    const { attachmentId, sessionKey } = await createFixture(stateDir, { body: source });
+    const canonicalPath = `/api/chat/media/outgoing/${encodeURIComponent(sessionKey)}/${attachmentId}/full`;
+    const transcriptMessages = [
+      {
+        role: "assistant",
+        content: [{ type: "image", url: canonicalPath, openUrl: canonicalPath }],
+        __openclaw: { id: "msg-1" },
+      },
+    ];
+    loadSessionEntryMock.mockReturnValue({
+      storePath: path.join(stateDir, "sessions.sqlite"),
+      entry: { sessionId: "sess-1", sessionFile: "session.jsonl" },
+    });
+    resolveSessionHistoryTranscriptPathMock.mockResolvedValue("session.jsonl");
+    readSessionMessagesMock.mockResolvedValue(transcriptMessages);
+    const download = await resolveManagedOutgoingImageArtifactDownload({
+      sessionKey,
+      artifactId: `${MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX}${attachmentId}`,
+      stateDir,
+    });
+    const thumbnailUrl = download?.url.replace(/\/full(?=\?)/u, "/thumbnail") ?? "";
+
+    vi.clearAllMocks();
+    const { result } = await requestManagedImage({
+      stateDir,
+      pathName: thumbnailUrl,
+      denyAuth: true,
+      transcriptMessages,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.headers["content-type"]).toBe("image/png");
+    expect(result.headers["content-disposition"]).toContain("cat-thumbnail.png");
+    expect(readImageProbeFromHeader(result.body)).toMatchObject({ width: 300, height: 150 });
+    expect(authorizeGatewayHttpRequestOrReplyMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a managed global artifact owned by another agent", async () => {
+    const { attachmentId } = await createFixture(stateDir, {
+      sessionKey: "global",
+      agentId: "ops",
+    });
+
+    const download = await resolveManagedOutgoingImageArtifactDownload({
+      sessionKey: "global",
+      agentId: "research",
+      artifactId: `${MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX}${attachmentId}`,
+      stateDir,
+    });
+
+    expect(download).toBeNull();
   });
 
   it("keeps serving and deleting an original after the configured media root changes", async () => {
@@ -1924,6 +1983,54 @@ describe("cleanupManagedOutgoingImageRecords", () => {
     expect(result.deletedRecordCount).toBe(1);
     expect(result.deletedFileCount).toBe(1);
     expect(result.retainedCount).toBe(0);
+    await expectPathMissing(fixture.originalPath);
+  });
+
+  it("retains an aged transient record while its session still has an active run", async () => {
+    const fixture = await createFixture(stateDir, {
+      messageId: null,
+      createdAt: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+    });
+
+    const checkedSessionKeys: string[] = [];
+    const result = await cleanupManagedOutgoingImageRecords({
+      stateDir,
+      hasActiveSessionRun: (sessionKey) => {
+        checkedSessionKeys.push(sessionKey);
+        return sessionKey === fixture.sessionKey;
+      },
+    });
+
+    expect(result).toEqual({ deletedRecordCount: 0, deletedFileCount: 0, retainedCount: 1 });
+    expect(checkedSessionKeys).toEqual([fixture.sessionKey]);
+    await expect(fs.access(fixture.originalPath)).resolves.toBeUndefined();
+    expect(
+      attachManagedImageRecordToMessage({
+        attachmentId: fixture.attachmentId,
+        sessionKey: fixture.sessionKey,
+        messageId: "msg-late",
+        updatedAt: new Date().toISOString(),
+        stateDir,
+      }),
+    ).toBe(true);
+    const attached = readManagedImageRecord(fixture.attachmentId, stateDir);
+    expect(attached?.messageId).toBe("msg-late");
+    expect(attached?.retentionClass).toBe("history");
+  });
+
+  it("reaps an aged transient record once its session has no active run", async () => {
+    const fixture = await createFixture(stateDir, {
+      messageId: null,
+      createdAt: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+    });
+
+    const result = await cleanupManagedOutgoingImageRecords({
+      stateDir,
+      hasActiveSessionRun: () => false,
+    });
+
+    expect(result).toEqual({ deletedRecordCount: 1, deletedFileCount: 1, retainedCount: 0 });
+    expect(readManagedImageRecord(fixture.attachmentId, stateDir)).toBeNull();
     await expectPathMissing(fixture.originalPath);
   });
 

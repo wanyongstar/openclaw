@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { classifyBoundedUnsignedDecimal } from "./lib/arg-utils.mts";
 
 const DEFAULT_FANOUT = [1, 8, 32, 64];
 const DEFAULT_SWEEP_ROWS = [32, 128, 512];
@@ -74,6 +75,7 @@ const REQUIRED_INVARIANT_FIELDS: Record<WorkerScenario, readonly string[]> = {
     "postTeardownTaskRows",
     "postTeardownDurableSubagentRows",
     "postTeardownDurableTaskRows",
+    "postTeardownActiveRootWork",
   ],
   spawnPipelineDurable: [
     "ok",
@@ -90,6 +92,7 @@ const REQUIRED_INVARIANT_FIELDS: Record<WorkerScenario, readonly string[]> = {
     "postTeardownTaskRows",
     "postTeardownDurableSubagentRows",
     "postTeardownDurableTaskRows",
+    "postTeardownActiveRootWork",
   ],
   admission: ["ok", "admissionCap", "overflowRejected", "released"],
   recoverySweep: [
@@ -142,17 +145,17 @@ Options:
 }
 
 function parseInteger(raw: string, flag: string, min: number, max: number): number {
-  if (!/^\d+$/u.test(raw)) {
+  const result = classifyBoundedUnsignedDecimal(raw, min, max);
+  if (result.kind === "syntax") {
     throw new Error(`${flag} must be an integer`);
   }
-  const value = Number(raw);
-  if (value < min) {
+  if (result.kind === "below") {
     throw new Error(`${flag} must be at least ${min}`);
   }
-  if (value > max) {
+  if (result.kind === "above") {
     throw new Error(`${flag} must be at most ${max}`);
   }
-  return value;
+  return result.value;
 }
 
 function parseList(raw: string, flag: string, max: number): number[] {

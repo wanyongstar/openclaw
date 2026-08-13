@@ -111,6 +111,7 @@ export async function runQaFlowSuiteStandard(
   let result: QaSuiteResult | undefined;
   let completionProgress: string | undefined;
   let evidenceWritten = false;
+  const startedScenarioIds: string[] = [];
   try {
     writeQaSuiteProgress(progressEnabled, `provider start: ${providerMode}`);
     const activeMock = await startQaProviderServer(providerMode, {
@@ -140,9 +141,15 @@ export async function runQaFlowSuiteStandard(
       enabledPluginIds,
       allowUnhealthyStartup: gatewayRuntimeOptions?.allowUnhealthyStartup,
       forwardHostHome: gatewayRuntimeOptions?.forwardHostHome,
-      mutateConfig: gatewayConfigPatch
-        ? (cfg) => applyQaMergePatch(cfg, gatewayConfigPatch) as OpenClawConfig
-        : undefined,
+      mutateConfig:
+        gatewayConfigPatch || params?.mutateConfig
+          ? (cfg) => {
+              const patchedConfig = gatewayConfigPatch
+                ? (applyQaMergePatch(cfg, gatewayConfigPatch) as OpenClawConfig)
+                : cfg;
+              return params?.mutateConfig ? params.mutateConfig(patchedConfig) : patchedConfig;
+            }
+          : undefined,
       // The gateway owns forced runtime, sandbox args, staged mock models, and provider keys.
       runtimeEnvPatch: mergeQaRuntimeEnvPatches(
         transport.createRuntimeEnvPatch?.(),
@@ -237,6 +244,7 @@ export async function runQaFlowSuiteStandard(
     };
     await captureGatewayHeapCheckpoint("suite-start");
     for (const [index, scenario] of selectedScenarios.entries()) {
+      startedScenarioIds.push(scenario.id);
       const scenarioIdForLog = sanitizeQaSuiteProgressValue(scenario.id);
       writeQaSuiteProgress(
         progressEnabled,
@@ -393,7 +401,8 @@ export async function runQaFlowSuiteStandard(
         alternateModel,
         fastMode,
         concurrency,
-        channelDriver: params?.channelDriver,
+        channel: params?.channelId ?? params?.channelDriverSelection?.channel ?? transport.id,
+        channelDriver: transportFactoryResult.driver,
         channelDriverSelection: params?.channelDriverSelection,
         isolatedWorkers: false,
         writeEvidenceFile: params?.writeEvidenceFile,
@@ -421,6 +430,7 @@ export async function runQaFlowSuiteStandard(
       summaryPath,
       report,
       scenarios,
+      startedScenarioIds,
       watchUrl: lab.baseUrl,
       ...(runtimeParityCell ? { runtimeParityCell } : {}),
     } satisfies QaSuiteResult;

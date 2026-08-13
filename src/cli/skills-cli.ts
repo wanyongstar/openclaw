@@ -22,7 +22,7 @@ import {
   fetchClawHubSkillCard,
   fetchClawHubSkillVerification,
   type ClawHubSkillVerificationResponse,
-} from "../infra/clawhub.js";
+} from "../infra/clawhub-skills.js";
 import { defaultRuntime } from "../runtime.js";
 import {
   installSkillFromClawHub,
@@ -384,9 +384,7 @@ function formatSkillCuratorStatus(status: SkillCuratorStatus): string {
     lines.push(`${label}  ${skill.state}${pinned}  last-used=${lastUsed}  uses=${skill.useCount}`);
   }
   for (const overlap of status.overlaps) {
-    lines.push(
-      `Possible overlap: ${overlap.left} ~ ${overlap.right} — merge via /learn if desired`,
-    );
+    lines.push(`Legacy overlap: ${overlap.left} ~ ${overlap.right}`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -991,7 +989,9 @@ export function registerSkillsCli(program: Command) {
   const runWorkshopDraftAction = (
     opts: SkillProposalDraftCliOptions,
     action: (
-      input: Omit<Parameters<typeof proposeUpdateSkill>[0], "skillName">,
+      input: Omit<Parameters<typeof proposeUpdateSkill>[0], "skillName" | "content"> & {
+        content: string;
+      },
     ) => Promise<SkillProposalReadResult>,
     format: (proposal: SkillProposalReadResult) => string = (proposal) => `${proposal.record.id}\n`,
   ): Promise<void> =>
